@@ -123,10 +123,11 @@
       double precision  ::  kau(4,18)                         ! Lower quadrant of stiffness
       double precision  ::  kua(18,4)                         ! Upper quadrant of stiffness
       double precision  ::  alpha(4)                          ! Internal DOF for incompatible mode element
-      double precision  ::  dxidx(2,2), determinant, det0     ! Jacobian inverse and determinant
+      double precision  ::  dxidx(2,2), determinant, det0, det     ! Jacobian inverse and determinant
       double precision  ::  E, xnu, D44, D11, D12             ! Material properties
-
-    !
+      double precision  ::  xi0(2)
+      double precision  ::  utemp(22)
+      
     !     Example ABAQUS UEL implementing 2D linear elastic elements
     !     Includes option for incompatible mode elements
     !     El props are:
@@ -136,10 +137,10 @@
 
 
       if (NNODE == 3) n_points = 1              ! Linear triangle
-      if (NNODE == 4) n_points = 4               ! Linear rectangle
+      if (NNODE == 4) n_points = 4              ! Linear rectangle
       if (NNODE == 6) n_points = 4              ! Quadratic triangle
-      if (NNODE == 8) n_points = 9               ! Serendipity rectangle
-      if (NNODE == 9) n_points = 9             ! Quadratic rect
+      if (NNODE == 8) n_points = 9              ! Serendipity rectangle
+      if (NNODE == 9) n_points = 9              ! Quadratic rect
 
     ! Write your code for a 2D element below
       
@@ -154,56 +155,175 @@
 
       RHS(1:MLVARX,1) = 0.d0
       AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
+      rhs_temp=0.d0
+      ktemp=0.d0
+      kuu(1:2*NNODE,1:2*NNODE)=0.d0
+      kua(1:2*NNODE,1:4)=0.d0
+      kau(1:4,1:2*NNODE)=0.d0
+      kaa(1:4,1:4)=0.d0
+      utemp(1:2*NNODE+4)=0.d0
+      
+      xi0(1:2)=0.d0
 
       D = 0.d0
       E = PROPS(1)
       xnu = PROPS(2)
-      d44 = 0.5D0*E/(1+xnu)
+      d33 = 0.5D0*E/(1+xnu)
       d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
       d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
-      D(1:3,1:3) = d12
+      D(1:2,1:2) = d12
       D(1,1) = d11
       D(2,2) = d11
-      D(3,3) = d11
-      D(4,4) = d44
+      D(3,3) = d33
       
+      ! Calculating Jacobian at center of the local element grid
+      
+      call abq_UEL_2D_shapefunctions(xi0(1:2),NNODE,N,dNdxi)
+      dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+      call abq_UEL_invert2d(dxdxi,dxidx,determinant)
+      det0=determinant
 
       ENERGY(1:8) = 0.d0
+      utemp(1:2*NNODE)=U(1:2*NNODE)
+      utemp(2*NNODE+1:2*NNODE+4)=alpha(1:4)
 
-    !     --  Loop over integration points
+      if (JTYPE==2) then
+    !     --  Loop over integration points for Stiffness
+      
       do kint = 1, n_points
-        call abq_UEL_2D_shapefunctions(xi(1:3,kint),NNODE,N,dNdxi)
+
+        
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)
         dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
         call abq_UEL_invert2d(dxdxi,dxidx,determinant)
         dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)
+        
+        det=determinant
+        
         B = 0.d0
         B(1,1:2*NNODE:2) = dNdx(1:NNODE,1)
-        B(2,2:2*NNODE+1:2) = dNdx(1:NNODE,2)
-        !B(3,3:2*NNODE+2:2)   = dNdx(1:NNODE,3)
-        B(4,1:2*NNODE:2) = dNdx(1:NNODE,2)
-        B(4,2:2*NNODE+1:2) = dNdx(1:NNODE,1)
+        B(1,2*NNODE+1:2*NNODE+4:2) = [(det0/det)*xi(1,kint)*dxidx(1,1),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,1)]
+        B(2,2:2*NNODE:2) = dNdx(1:NNODE,2)
+        B(2,2*NNODE+2:2*NNODE+4:2)=[(det0/det)*xi(1,kint)*dxidx(1,2),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,2)]
+        B(3,1:2*NNODE:2) = dNdx(1:NNODE,2)
+        B(3,2:2*NNODE:2) = dNdx(1:NNODE,1)
+        B(3,2*NNODE+1:2*NNODE+4:2)=[(det0/det)*xi(1,kint)*dxidx(1,2),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,2)]
+        B(3,2*NNODE+2:2*NNODE+4:2)= [(det0/det)*xi(1,kint)*dxidx(1,1),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,1)]
+        
+       
+        ktemp(1:2*NNODE+4,1:2*NNODE+4)=ktemp(1:2*NNODE+4,1:2*NNODE+4)+
+     1             matmul(transpose(B(1:3,1:2*NNODE+4)),
+     2        matmul(D(1:3,1:3),B(1:3,1:2*NNODE+4)))*w(kint)*determinant
+      
+      end do
+      
+      ! Extracting the sub-matrices 
+      
+        kuu(1:2*NNODE,1:2*NNODE)=ktemp(1:2*NNODE,1:2*NNODE)
+        kua(1:2*NNODE,1:4)=ktemp(1:2*NNODE,2*NNODE+1:2*NNODE+4)
+        kau(1:4,1:2*NNODE)=ktemp(2*NNODE+1:2*NNODE+4,1:2*NNODE)
+        kaa(1:4,1:4)=ktemp(2*NNODE+1:2*NNODE+4,2*NNODE+1:2*NNODE+4)
+        
+        call abq_inverse_LU(kaa,kaainv,4)
+        
+      ! Calculating unknown additional DOFs, alpha
+        
+        alpha(1:4) =  matmul(-1*kaainv(1:4,1:4), 
+     1   matmul(kau(1:4,1:2*NNODE), utemp(1:2*NNODE)))
+        
+      ! Assembling the temporary displacement/DoF vector
+        utemp(1:2*NNODE)=U(1:2*NNODE)
+        utemp(2*NNODE+1:2*NNODE+4)=alpha(1:4)
+        
+      ! Looping over integration points for RHS
+        
+      do kint =1, n_points
+       
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)
+        dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+        call abq_UEL_invert2d(dxdxi,dxidx,determinant)
+        dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)
+        
+        det=determinant
+        
+        B = 0.d0
+        B(1,1:2*NNODE:2) = dNdx(1:NNODE,1)
+        B(1,2*NNODE+1:2*NNODE+4:2) = [(det0/det)*xi(1,kint)*dxidx(1,1),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,1)]
+        B(2,2:2*NNODE:2) = dNdx(1:NNODE,2)
+        B(2,2*NNODE+2:2*NNODE+4:2)=[(det0/det)*xi(1,kint)*dxidx(1,2),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,2)]
+        B(3,1:2*NNODE:2) = dNdx(1:NNODE,2)
+        B(3,2:2*NNODE:2) = dNdx(1:NNODE,1)
+        B(3,2*NNODE+1:2*NNODE+4:2)=[(det0/det)*xi(1,kint)*dxidx(1,2),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,2)]
+        B(3,2*NNODE+2:2*NNODE+4:2)= [(det0/det)*xi(1,kint)*dxidx(1,1),
+     1                              (det0/det)*xi(2,kint)*dxidx(2,1)]
+        
+        strain(1:3) = matmul(B(1:3,1:2*NNODE+4),utemp(1:2*NNODE+4))
+        stress(1:3) = matmul(D(1:3,1:3),strain(1:3))
+        
+        rhs_temp(1:2*NNODE+4) = rhs_temp(1:2*NNODE+4)
+     1   - matmul(transpose(B(1:3,1:2*NNODE+4)),stress(1:3))*
+     2                                          w(kint)*determinant
+      
+        end do
+        
+      
+        AMATRX(1:2*NNODE,1:2*NNODE) = AMATRX(1:2*NNODE,1:2*NNODE)+ 
+     1   kuu(1:2*NNODE,1:2*NNODE) 
+     2   - matmul(kua(1:2*NNODE,1:4),
+     3     matmul(kaainv(1:4,1:4),kau(1:4,1:2*NNODE)))
+                                
+        
+        
+        RHS(1:2*NNODE,1)=RHS(1:2*NNODE,1)+rhs_temp(1:2*NNODE)- 
+     1   matmul(kua(1:2*NNODE,1:4), 
+     2   matmul(kaainv(1:4,1:4),rhs_temp(2*NNODE+1:2*NNODE+4))) 
+        
+        if (NSVARS>=n_points*2) then   ! Store stress at each integration point (if space was allocated to do so)
+            SVARS(3*kint-2:3*kint) = stress(1:3)
+        endif
+        
+       else if (JTYPE ==1) then
+    
+        do kint = 1, n_points
+            call abq_UEL_2D_shapefunctions(xi(1:3,kint),NNODE,N,dNdxi)
+            dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+            call abq_UEL_invert2d(dxdxi,dxidx,determinant)
+            dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)
+            B = 0.d0
+            B(1,1:2*NNODE:2) = dNdx(1:NNODE,1)
+            B(2,2:2*NNODE+1:2) = dNdx(1:NNODE,2)
+            !B(3,3:2*NNODE+2:2)   = dNdx(1:NNODE,3)
+            B(4,1:2*NNODE:2) = dNdx(1:NNODE,2)
+            B(4,2:2*NNODE+1:2) = dNdx(1:NNODE,1)
        
 
-        strain = matmul(B(1:4,1:2*NNODE),U(1:2*NNODE))
+            strain = matmul(B(1:4,1:2*NNODE),U(1:2*NNODE))
 
-        stress = matmul(D,strain)
-        RHS(1:2*NNODE,1) = RHS(1:2*NNODE,1)
+            stress = matmul(D,strain)
+            RHS(1:2*NNODE,1) = RHS(1:2*NNODE,1)
      1   - matmul(transpose(B(1:4,1:2*NNODE)),stress(1:4))*
      2                                          w(kint)*determinant
 
-        AMATRX(1:2*NNODE,1:2*NNODE) = AMATRX(1:2*NNODE,1:2*NNODE)
+            AMATRX(1:2*NNODE,1:2*NNODE) = AMATRX(1:2*NNODE,1:2*NNODE)
      1  + matmul(transpose(B(1:4,1:2*NNODE)),matmul(D,B(1:4,1:2*NNODE)))
      2                                             *w(kint)*determinant
 
-        ENERGY(2) = ENERGY(2)
+            ENERGY(2) = ENERGY(2)
      1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
 
-        if (NSVARS>=n_points*4) then   ! Store stress at each integration point (if space was allocated to do so)
-            SVARS(4*kint-3:4*kint) = stress(1:4)
-        endif
+            if (NSVARS>=n_points*4) then   ! Store stress at each integration point (if space was allocated to do so)
+                SVARS(4*kint-3:4*kint) = stress(1:4)
+            endif
       end do
-
-
+        
+      end if 
       PNEWDT = 1.d0          ! This leaves the timestep unchanged (ABAQUS will use its own algorithm to determine DTIME)
 
       return
@@ -693,7 +813,7 @@
 
       double precision COFACTOR(2,2)
 
-!   Compute inverse and determinant of 3x3 matrix
+!   Compute inverse and determinant of 2x2 matrix
 
       determinant =   A(1,1)*A(2,2)
      1   - A(1,2)*A(2,1)
