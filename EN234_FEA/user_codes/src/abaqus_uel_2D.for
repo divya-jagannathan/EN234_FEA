@@ -155,19 +155,25 @@
 
       RHS(1:MLVARX,1) = 0.d0
       AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
-      rhs_temp=0.d0
-      ktemp=0.d0
-      kuu(1:2*NNODE,1:2*NNODE)=0.d0
-      kua(1:2*NNODE,1:4)=0.d0
-      kau(1:4,1:2*NNODE)=0.d0
-      kaa(1:4,1:4)=0.d0
-      utemp(1:2*NNODE+4)=0.d0
-      
-      xi0(1:2)=0.d0
+     
 
       D = 0.d0
       E = PROPS(1)
       xnu = PROPS(2)
+     
+      ! Calculating Jacobian at center of the local element grid
+      
+      xi0(1:2)=0.d0
+      call abq_UEL_2D_shapefunctions(xi0(1:2),NNODE,N,dNdxi)
+      dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+      call abq_UEL_invert2d(dxdxi,dxidx,determinant)
+      det0=determinant
+
+      ENERGY(1:8) = 0.d0
+      
+
+      if (JTYPE==2) then
+          
       d33 = 0.5D0*E/(1+xnu)
       d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
       d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
@@ -176,18 +182,18 @@
       D(2,2) = d11
       D(3,3) = d33
       
-      ! Calculating Jacobian at center of the local element grid
+      rhs_temp=0.d0
+      ktemp=0.d0
+      kuu(1:2*NNODE,1:2*NNODE)=0.d0
+      kua(1:2*NNODE,1:4)=0.d0
+      kau(1:4,1:2*NNODE)=0.d0
+      kaa(1:4,1:4)=0.d0
+      utemp(1:2*NNODE+4)=0.d0
       
-      call abq_UEL_2D_shapefunctions(xi0(1:2),NNODE,N,dNdxi)
-      dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
-      call abq_UEL_invert2d(dxdxi,dxidx,determinant)
-      det0=determinant
-
-      ENERGY(1:8) = 0.d0
       utemp(1:2*NNODE)=U(1:2*NNODE)
       utemp(2*NNODE+1:2*NNODE+4)=alpha(1:4)
-
-      if (JTYPE==2) then
+      
+     
     !     --  Loop over integration points for Stiffness
       
       do kint = 1, n_points
@@ -289,10 +295,19 @@
             SVARS(3*kint-2:3*kint) = stress(1:3)
         endif
         
-       else if (JTYPE ==1) then
-    
+      else if (JTYPE ==1) then
+      
+          d33 = 0.5D0*E/(1+xnu)
+          d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
+          d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
+          D(1:2,1:2) = d12
+          D(1,1) = d11
+          D(2,2) = d11
+          D(3,3) = d11
+          D(4,4) = d33
+          
         do kint = 1, n_points
-            call abq_UEL_2D_shapefunctions(xi(1:3,kint),NNODE,N,dNdxi)
+            call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)
             dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
             call abq_UEL_invert2d(dxdxi,dxidx,determinant)
             dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)
@@ -318,7 +333,7 @@
             ENERGY(2) = ENERGY(2)
      1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
 
-            if (NSVARS>=n_points*4) then   ! Store stress at each integration point (if space was allocated to do so)
+            if (NSVARS>=n_points*2) then   ! Store stress at each integration point (if space was allocated to do so)
                 SVARS(4*kint-3:4*kint) = stress(1:4)
             endif
       end do
