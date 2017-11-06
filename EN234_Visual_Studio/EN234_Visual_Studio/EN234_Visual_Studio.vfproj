@@ -47,6 +47,7 @@
 	<Files>
 		<Filter Name="Header Files" Filter="fi;fd;h;inc">
 		<File RelativePath="..\..\EN234_FEA\user_codes\src\aba_param.inc"/>
+		<File RelativePath="..\..\EN234_FEA\user_codes\src\abaqus_uel_neohooke.for"/>
 		<File RelativePath="..\..\EN234_FEA\user_codes\src\vaba_param.inc"/></Filter>
 		<Filter Name="Input_files">
 		<File RelativePath="..\..\EN234_FEA\input_files\Abaqus_uel_beam_1el.in"/>
