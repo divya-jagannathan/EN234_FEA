@@ -92,440 +92,169 @@
     !
     !
     ! Local Variables
-      integer      :: i,j,n_points,kint, nfacenodes, ipoin, ie
-      integer      :: face_node_list(8)                       ! List of nodes on an element face
-    !
-      double precision  ::  xi(3,64)                          ! Volumetric Integration points
-      double precision  ::  w(64)                             ! Integration weights
-      double precision  ::  N(20)                             ! 3D Shape functions
-      double precision  ::  dNdxi(20,3)                       ! 3D Shape function derivatives
-      double precision  ::  dxdxi(3,3)                        ! Derivative of position wrt normalized coords
-      double precision  ::  dNdx(20,3)                        ! Derivative of shape functions wrt reference coords
-      double precision  ::  dNdy(20,3)                        ! Derivative of shape functions wrt deformed coords
-    !
-    !   Variables below are for computing integrals over element faces
-      double precision  ::  face_coords(3,8)                  ! Coords of nodes on an element face
-      double precision  ::  xi2(2,9)                          ! Area integration points
-      double precision  ::  N2(9)                             ! 2D shape functions
-      double precision  ::  dNdxi2(9,2)                       ! 2D shape function derivatives
-      double precision  ::  norm(3)                           ! Normal to an element face
-      double precision  ::  dxdxi2(3,2)                       ! Derivative of spatial coord wrt normalized areal coord
-    !
-      double precision  ::  stress(6)                         ! Stress vector contains [s11, s22, s33, s12, s13, s23]
-      double precision  ::  F(3,3)                            ! Deformation gradient
-      double precision  ::  Finv(3,3)                         ! Inverse of deformation gradient
-      double precision  ::  B(3,3)                            ! C-G deformation tensor
-      double precision  ::  JJ                                ! det(F)
-      double precision  ::  G(6,9), qvec(9)
-      double precision  ::  D(6,6), H(6,9)                            ! Material tangent
-      double precision  ::  Bbar(6,60)                        ! strain = Bbar*(dof_total)
-      double precision  ::  Bstar(9,60)                       ! F = Bstar*(dof_total)
-      double precision  ::  Pvec(3*NNODE)
-      double precision  ::  Pmat(3*NNODE,3*NNODE)
-      double precision  ::  P(3*NNODE,3*NNODE)     !
-      double precision  ::  S(3,NNODE)
-      double precision  ::  Svec(3*NNODE), Sigmamat(3,3)
-      double precision  ::  Smat(3*NNODE,3*NNODE), kmat(1:NNODE,1:NNODE)
-      double precision  ::  dxidx(3,3), determinant           ! Jacobian inverse and determinant
-      double precision  ::  eyevec(6),id(3,3)
-      double precision  ::  Sigma(6)
-      double precision  ::  Cauchystress(3,3), cauchy(6)
-      double precision  ::  G22,G33,G44,G11
-    ! 
-    !     Example ABAQUS UEL implementing 3D linear elastic elements
-    !     El props are:
-
-    !     PROPS(1)         Young's modulus
-    !     PROPS(2)         Poisson's ratio
       
-      mu = PROPS(1)
-      K=PROPS(2)
-      G11=PROPS(3)
-      G22=PROPS(4)
-      G33=PROPS(5)
-      G44=PROPS(6)
+      integer      :: i,j,n_points,kint
+    !
+      double precision  ::  xi(2,9)                          ! Area integration points
+      double precision  ::  w(9)                             ! Area integration weights
+      double precision  ::  N(9)                             ! 2D shape functions
+      double precision  ::  dNdxi(9,2)                       ! 2D shape function derivatives
+      double precision  ::  dNdx(9,2)                        ! Spatial derivatives
+      double precision  ::  Nbar(9)
+      double precision  ::  dNbardxi(9,2)
+      double precision  ::  dNbardx(9,2)
+      double precision  ::  dxdxi(2,2)                       ! Derivative of spatial coords wrt normalized coords
 
-      if (NNODE == 4) n_points = 1               ! Linear tet
-      if (NNODE == 10) n_points = 4              ! Quadratic tet
-      if (NNODE == 8) n_points = 8               ! Linear Hex
-      if (NNODE == 20) n_points = 27             ! Quadratic hex
+      double precision  ::  sol(9), dsol(9)                   ! Sol vector contains [mu, c, dmudx1, dmudx2, dcdx1, dcdx2]
+      double precision  ::  q(9)                              ! q vector defined in class
+      double precision  ::  D(9,9), Dold(4,4)                 ! D matrix defined in class
+      double precision  ::  B(9,24)             ! p = B*U
+      double precision  ::  dxidx(2,2), determinant           ! Jacobian inverse and determinant
+      double precision  ::  diffusion_coeft,kappa,theta       ! Material properties
+      double precision  ::  E,xnu,Omega,xw                     ! Material properties
+      double precision  ::  c,xmu, dc, dxmu,stress(4),s33, enew(4)    ! concentration
 
-      call abq_UEL_3D_integrationpoints(n_points, NNODE, xi, w)
+    !
+    !     Example ABAQUS UEL implementing 2D phase field model
 
-      if (MLVARX<3*NNODE) then
-        write(6,*) ' Error in abaqus UEL '
-        write(6,*) ' Variable MLVARX must exceed 3*NNODE'
-        write(6,*) ' MLVARX = ',MLVARX,' NNODE = ',NNODE
-        stop
-      endif
+      if (NNODE == 3) n_points = 4
+      if (NNODE == 4) n_points = 4
+      if (NNODE == 6) n_points = 4
+      if (NNODE == 8) n_points = 4
+      if (NNODE == 9) n_points = 9
+
+      call abq_UEL_2D_integrationpoints(4, NNODE, xi, w)
 
       RHS(1:MLVARX,1) = 0.d0
       AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
 
+      E = PROPS(1)
+      xnu = PROPS(2)
+      Omega = PROPS(3)
+      xw=PROPS(4)
+      kappa=PROPS(5)
+      diffusion_coeft=PROPS(6)
+      theta=PROPS(7)
 
-      ENERGY(1:8) = 0.d0
-
-    !     --  Loop over integration points
-      do kint = 1, n_points
-        call abq_UEL_3D_shapefunctions(xi(1:3,kint),NNODE,N,dNdxi)
-        dxdxi = matmul(coords(1:3,1:NNODE),dNdxi(1:NNODE,1:3))
-        call abq_UEL_invert3d(dxdxi,dxidx,determinant)
-        dNdx(1:NNODE,1:3) = matmul(dNdxi(1:NNODE,1:3),dxidx)
-
-        ! Caculate the deformation gradient
-        do i = 1,3
-            ie = 3*(NNODE-1)+i
-            F(i,1:3) = matmul(U(i:ie:3),dNdx(1:NNODE,1:3))
-            F(i,i) = F(i,i) + 1.d0
-        end do
-        B = matmul(F,transpose(F))
-        
-        call abq_UEL_invert3d(F,Finv,JJ)
-        dNdy(1:NNODE,1:3) = matmul(dNdx(1:NNODE,1:3),Finv)
-            
-        
-        Bstar = 0.d0
-        Bstar(1,1:3*NNODE-2:3) = dNdx(1:NNODE,1)
-        Bstar(2,2:3*NNODE-1:3) = dNdx(1:NNODE,2)
-        Bstar(3,3:3*NNODE:3)   = dNdx(1:NNODE,3)
-        Bstar(4,1:3*NNODE-2:3) = dNdx(1:NNODE,2)
-        Bstar(5,2:3*NNODE-1:3) = dNdx(1:NNODE,1)
-        Bstar(6,1:3*NNODE-2:3) = dNdx(1:NNODE,3)
-        Bstar(7,3:3*NNODE:3)   = dNdx(1:NNODE,1)
-        Bstar(8,2:3*NNODE-1:3) = dNdx(1:NNODE,3)
-        Bstar(9,3:3*NNODE:3)   = dNdx(1:NNODE,2)
-
-       G(6,6)=0.d0 
-       G(1,1)=G11
-       G(2,2)=G22
-       G(3,3)=G33
-       
-       do i = 4,6
-           G(i,i)=G44
-       end do
-       
-       eyevec(1:6)=0.d0
-       eyevec(1:3)=1.d0
-       
-       call fung_mat(PROPS(1:NPROPS),NPROPS,G,F,JJ,qvec,Sigma,H,D)
-
-        RHS(1:3*NNODE,1) = RHS(1:3*NNODE,1)
-     1   - matmul(transpose(Bstar(1:9,1:3*NNODE)),qvec(1:9))*
-     2   w(kint)*determinant                                        
-
+      D = 0.d0
+      d44 = 0.5D0*E/(1+xnu)
+      d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
+      d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
+      d13=d12
+      d23=d12
+      d21=d12
+      d22=d11
+      D(1,1) = d11
+      D(2,2) = d11
+      D(3,3) = d44
+      D(1,2) = d12
+      D(2,1) = D(1,2)
+      D(1,5)=-(Omega/3.d0)*(d11+d12+d13)
+      D(2,5)=-(Omega/3.d0)*(d21+d22+d23)
+      D(4,1)=D(1,5)
+      D(4,2)=D(2,5)
+      D(4,4)=1.d0
+    ! D(4,5) defined inside the integration loop 
+      D(5,5)= 1/DTIME
+      D(6,8)= -kappa
+      D(7,9)= -kappa
+      D(8,6)= theta*diffusion_coeft
+      D(9,7)= theta*diffusion_coeft
   
-        AMATRX(1:3*NNODE,1:3*NNODE) = AMATRX(1:3*NNODE,1:3*NNODE)
-     1  + matmul(transpose(Bstar(1:9,1:3*NNODE)),
-     2    matmul(transpose(H), matmul(D,matmul(H,
-     3    Bstar(1:9,1:3*NNODE)))))*w(kint)*determinant
-   
+    !     --  Loop over integration points
+      do kint = 1, 4
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),8,N,dNdxi)
+        dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+        call abq_inverse_LU(dxdxi,dxidx,2)
+        determinant = dxdxi(1,1)*dxdxi(2,2)-dxdxi(1,2)*dxdxi(2,1)
+        dNdx(1:8,1:2) = matmul(dNdxi(1:8,1:2),dxidx)
+        
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,Nbar,dNbardxi)
+      !  dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:4,1:2))
+       ! call abq_inverse_LU(dxdxi,dxidx,2)
+        !determinant = dxdxi(1,1)*dxdxi(2,2)-dxdxi(1,2)*dxdxi(2,1)
+        dNbardx(1:4,1:2) = matmul(dNbardxi(1:4,1:2),dxidx)
+        
+        B = 0.d0
+        B(1,1:16:4) = dNdx(1:4,1)
+        B(1,17:24:2)= dNdx(5:8,1)
+        B(2,2:16:4) = dNdx(1:4,2)
+        B(2,18:24:2)= dNdx(5:8,2)
+        B(3,1:16:4) = dNdx(1:4,2)
+        B(3,17:24:2)= dNdx(5:8,2)
+        B(3,2:16:4) = dNdx(1:4,1)
+        B(3,18:24:2)= dNdx(5:8,1)
+        B(4,3:16:4) = Nbar(1:4)
+        B(5,4:16:4) = Nbar(1:4)
+        B(6,3:16:4) = dNbardx(1:4,1)
+        B(7,3:16:4) = dNbardx(1:4,2)
+        B(8,4:16:4) = dNbardx(1:4,1)
+        B(9,4:16:4) = dNbardx(1:4,2)
+        
+        sol = matmul(B(1:9,1:24),U(1:24))      ! The p vector at the end of the step
+        dsol = matmul(B(1:9,1:24),DU(1:24,1))    ! Increment in the p vector
 
-        Sigmamat(1:3,1:3)=0.d0
-        Sigmamat(1,1)=Sigma(1)
-        Sigmamat(2,2)=Sigma(2)
-        Sigmamat(3,3)=Sigma(3)
-        Sigmamat(1,2)=Sigma(4)
-        Sigmamat(2,1)=Sigma(4)
-        Sigmamat(1,3)=Sigma(5)
-        Sigmamat(3,1)=Sigma(5)
-        Sigmamat(2,3)=Sigma(6)
-        Sigmamat(3,2)=Sigma(6)
-        
-!       Geometric stiffness
-        
-       Smat(1:3*NNODE,1:3*NNODE)=0.d0
+        c = sol(5)
+        xmu = sol(4)
        
-       kmat(1:NNODE,1:NNODE)=matmul(dNdx(1:NNODE,1:3),
-     1  matmul(Sigmamat(1:3,1:3),transpose(dNdx(1:NNODE,1:3))))
-       
-       id=0.d0
-       
-       do i=1,3
-           id(i,i)=1.d0
-       end do
-       
-        do i=1,NNODE
-            do j=1,NNODE
-                Smat(3*i-2:3*i,3*j-2:3*j)=kmat(i,j)*id
-            end do
-        end do
         
-        AMATRX(1:3*NNODE,1:3*NNODE) = AMATRX(1:3*NNODE,1:3*NNODE) +
-     1  Smat(1:3*NNODE,1:3*NNODE)*w(kint)*determinant
+        enew(1)=sol(1)-c*Omega/3
+        enew(2)=sol(2)-c*Omega/3
+        enew(3)=-c*Omega/3
+        enew(4)=sol(3)
         
-        Cauchystress = matmul(F(1:3,1:3),
-     1       matmul(Sigmamat(1:3,1:3), transpose(F(1:3,1:3))))/JJ
+        Dold=0.d0
+        Dold(1,1)=d11
+        Dold(2,2)=d11
+        Dold(3,3)=d11
+        Dold(4,4)=d44
+        Dold(1,2)=d12
+        Dold(1,3)=d12
+        Dold(2,1)=d12
+        Dold(2,3)=d12
+        Dold(3,1)=d12
+        Dold(3,2)=d12
         
-        cauchy(1)=Cauchystress(1,1)
-        cauchy(2)=Cauchystress(2,2)
-        cauchy(3)=Cauchystress(3,3)
-        cauchy(4)=Cauchystress(1,2)
-        cauchy(5)=Cauchystress(1,3)
-        cauchy(6)=Cauchystress(2,3)
+        stress(1:4)=matmul(Dold(1:4,1:4),enew(1:4))
+        
+        q(1) = stress(1)
+        q(2) = stress(2)
+        q(3) = stress(4)
+        q(4) = xmu-2*xw*(c)*(c-1)*(2*(c)-1)-
+     1   (Omega/3)*(stress(1)+stress(2)+stress(3))
+        q(5) = dsol(5)/DTIME
+        q(6) = -kappa*(sol(8))
+        q(7) = -kappa*(sol(9))
+        q(8) = diffusion_coeft*(sol(6)+(theta-1)*dsol(6))
+        q(9) = diffusion_coeft*(sol(7)+(theta-1)*dsol(7))
 
-        if (NSVARS>=n_points*6) then   ! Store Cauchy stress at each integration point (if space was allocated to do so)
-            SVARS(6*kint-5:6*kint) =  cauchy(1:6)
+        D(4,5) = -xw*(12*(c)**2-12*(c)+2) +
+     1   ((Omega**2)/9)*(3*d11+6*d12)
+
+
+        RHS(1:24,1) = RHS(1:24,1) 
+     1   - matmul(transpose(B(1:9,1:24)),q)*w(kint)*determinant
+
+        AMATRX(1:24,1:24) = AMATRX(1:2*NNODE,1:2*NNODE) 
+     1   + matmul(transpose(B(1:9,1:24)),
+     2             matmul(D,B(1:9,1:24)))*w(kint)*determinant
+        
+        
+         if (NSVARS>=n_points*4) then   ! Store stress at each integration point (if space was allocated to do so)
+             SVARS(4*kint-3:4*kint) = stress(1:4)
         endif
+  
+
       end do
+  
 
-
-      PNEWDT = 1.d0          ! This leaves the timestep unchanged (ABAQUS will use its own algorithm to determine DTIME)
-    !
-    !   Apply distributed loads
-    !
-    !   Distributed loads are specified in the input file using the Un option in the input file.
-    !   n specifies the face number, following the ABAQUS convention.
-    !
-    !   This is coded to apply nominal tractions to the element face (the residual force does not change as the element deforms)
-    !
-    !
-!      do j = 1,NDLOAD
-!
-!        call abq_facenodes_3D(NNODE,iabs(JDLTYP(j,1)),
-!     1                                     face_node_list,nfacenodes)
-!
-!        do i = 1,nfacenodes
-!            face_coords(1:3,i) = coords(1:3,face_node_list(i))
-!        end do
-!
-!        if (nfacenodes == 3) n_points = 3
-!        if (nfacenodes == 6) n_points = 4
-!        if (nfacenodes == 4) n_points = 4
-!        if (nfacenodes == 8) n_points = 9
-!
-!       call abq_UEL_2D_integrationpoints(n_points, nfacenodes, xi2, w)
-!
-!        do kint = 1,n_points
-!            call abq_UEL_2D_shapefunctions(xi2(1:2,kint),
-!     1                        nfacenodes,N2,dNdxi2)
-!            dxdxi2 = matmul(face_coords(1:3,1:nfacenodes),
-!     1                           dNdxi2(1:nfacenodes,1:2))
-!            norm(1)=(dxdxi2(2,1)*dxdxi2(3,2))-(dxdxi2(2,2)*dxdxi2(3,1))
-!            norm(2)=(dxdxi2(1,1)*dxdxi2(3,2))-(dxdxi2(1,2)*dxdxi2(3,1))
-!           norm(3)=(dxdxi2(1,1)*dxdxi2(2,2))-(dxdxi2(1,2)*dxdxi2(2,1))
-!
-!            do i = 1,nfacenodes
-!                ipoin = 3*face_node_list(i)-2
-!                RHS(ipoin:ipoin+2,1) = RHS(ipoin:ipoin+2,1)
-!     1                 - N2(1:nfacenodes)*adlmag(j,1)*norm(1:3)*w(kint)      ! Note determinant is already in normal
-!            end do
-!        end do
-!      end do
 
       return
 
       END SUBROUTINE UEL
 
 
-      subroutine fung_mat(element_properties,n_properties,G,F,J,qvec,
-     1 Sigma,H,D)
-
-       implicit none
-
-       integer, intent(in)           :: n_properties
-       double precision, intent(in)  :: element_properties(n_properties)
-       double precision, intent(in)  :: F(3,3)
-       double precision, intent(in)  :: J
-       double precision, intent(in)  :: G(6,6)
-       double precision, intent(out) :: Sigma(6)
-       double precision, intent(out) :: D(6,6)
-       double precision, intent(out) :: H(6,9)
-       double precision, intent(out) :: qvec(9)
-
-       double precision :: C(3,3)
-       double precision :: Cvec(6)
-       double precision :: Cinv(3,3)
-       double precision :: Cinvvec(6)
-       double precision :: Cbarvec(6)
-       double precision :: Cstarvec(6)
-       double precision :: Cbarstarvec(6)
-       double precision :: eyevec(6)
-       double precision :: mu
-       double precision :: K
-       double precision :: ss
-       double precision :: Qval, q(3,3)
-       double precision :: Pvec(6)
-       double precision :: Omega(6,6), D1(6,6), D2(6,6), D3(6,6)
-       double precision :: P1(6,6),P2(6,6), C1(6,6), Sigmamat(3,3)
-       integer :: i
-
-       !  This subroutine calculates the Kirchhoff stress tau = J*cauchy_stress (stored as a vector stress(i) = [tau_11, tau_22, tau_33, etc]
-       !  and the tangent matrix D[I,J] = [dtau_11/dB_11, dtau_11/dB_22,... 
-       !                                   dtau_22/dB_11, dtau_22/dB_22,
-       !                                    etc
-       
-       mu = element_properties(1)
-       K  = element_properties(2)
-
-       C = matmul(transpose(F),F)
-       
-       Cvec(1) = C(1,1)
-       Cvec(2) = C(2,2)
-       Cvec(3) = C(3,3)
-       Cvec(4) = C(1,2)
-       Cvec(5) = C(1,3)
-       Cvec(6) = C(2,3)
-       
-       Cstarvec(1:6)=Cvec(1:6)
-       Cstarvec(4:6)=2.d0*Cvec(4:6)
-       
-       call abq_UEL_invert3d(C,Cinv,ss)      ! ss is just a dummy variable here
-
-       Cinvvec(1) = Cinv(1,1)
-       Cinvvec(2) = Cinv(2,2)
-       Cinvvec(3) = Cinv(3,3)
-       Cinvvec(4) = Cinv(1,2)
-       Cinvvec(5) = Cinv(1,3)
-       Cinvvec(6) = Cinv(2,3)
-       
-       ss = J**(-2.d0/3.d0)
-       
-       do i = 1,6
-         Cbarvec(i) = Cvec(i)*ss
-         Cbarstarvec(i)=Cstarvec(i)*ss
-       end do
-       
-       eyevec(1:3) = 1.d0
-       eyevec(4:6) = 0.d0
-      
-       Qval=(1.d0/4)*dot_product(Cbarvec-
-     1  eyevec,matmul(G,Cbarvec-eyevec))
-
-       Pvec=(ss/2)*(matmul(G,(Cbarstarvec-
-     1    eyevec))-(1.d0/3)*dot_product(Cstarvec,
-     2    matmul(G,(Cbarstarvec-eyevec)))*Cinvvec)
-       
-        Sigma=mu*exp(Qval)*Pvec+K*J*(J-1)*Cinvvec
-       
-        Sigmamat(1:3,1:3)=0.d0
-        Sigmamat(1,1)=Sigma(1)
-        Sigmamat(2,2)=Sigma(2)
-        Sigmamat(3,3)=Sigma(3)
-        Sigmamat(1,2)=Sigma(4)
-        Sigmamat(2,1)=Sigma(4)
-        Sigmamat(1,3)=Sigma(5)
-        Sigmamat(3,1)=Sigma(5)
-        Sigmamat(2,3)=Sigma(6)
-        Sigmamat(3,2)=Sigma(6)
-       
-       q=0.d0
-      
-       q=matmul(Sigmamat,transpose(F))
-     
-       qvec(1)=q(1,1)
-       qvec(2)=q(2,2)
-       qvec(3)=q(3,3)
-       qvec(4)=q(2,1)
-       qvec(5)=q(1,2)
-       qvec(6)=q(3,1)
-       qvec(7)=q(1,3)
-       qvec(8)=q(3,2)
-       qvec(9)=q(2,3)
-       
-       
-       H(1:6,1:9)=0.d0
-       
-       H(1,1)=F(1,1)
-       H(1,5)=F(2,1)
-       H(1,7)=F(3,1)
-       H(2,2)=F(2,2)
-       H(2,4)=F(1,2)
-       H(2,9)=F(3,2)
-       H(3,3)=F(3,3)
-       H(3,6)=F(1,3)
-       H(3,8)=F(2,3)
-       H(4,1)=F(1,2)
-       H(4,2)=F(2,1)
-       H(4,4)=F(1,1)
-       H(4,5)=F(2,2)
-       H(4,7)=F(3,2)
-       H(4,9)=F(3,1)
-       H(5,1)=F(1,3)
-       H(5,3)=F(3,1)
-       H(5,5)=F(2,3)
-       H(5,6)=F(1,1)
-       H(5,7)=F(3,3)
-       H(5,8)=F(2,1)
-       H(6,2)=F(2,3)
-       H(6,3)=F(3,2)
-       H(6,4)=F(1,3)
-       H(6,6)=F(1,2)
-       H(6,8)=F(2,2)
-       H(6,9)=F(3,3)
-       
-      Omega(1:6,1:6)=0.d0
-     
-      Omega(1,1)=Cinv(1,1)*Cinv(1,1) 
-      Omega(1,2)=Cinv(1,2)*Cinv(1,2)
-      Omega(1,3)=Cinv(1,3)*Cinv(1,3)
-      Omega(1,4)=Cinv(1,1)*Cinv(1,2)
-      Omega(1,5)=Cinv(1,1)*Cinv(1,3)
-      Omega(1,6)=Cinv(1,2)*Cinv(1,3)
-      Omega(2,2)=Cinv(2,2)*Cinv(2,2)
-      Omega(2,3)=Cinv(2,3)*Cinv(2,3)
-      Omega(2,4)=Cinv(2,1)*Cinv(2,2)
-      Omega(2,5)=Cinv(2,1)*Cinv(2,3)
-      Omega(2,6)=Cinv(2,2)*Cinv(2,3)
-      Omega(3,3)=Cinv(3,3)*Cinv(3,3)
-      Omega(3,4)=Cinv(3,1)*Cinv(3,2)
-      Omega(3,5)=Cinv(3,1)*Cinv(3,3)
-      Omega(3,6)=Cinv(3,2)*Cinv(3,3)
-      Omega(4,4)=(Cinv(1,1)*Cinv(2,2)+Cinv(1,2)*Cinv(1,2))/2.d0
-      Omega(4,5)=(Cinv(1,1)*Cinv(2,3)+Cinv(1,3)*Cinv(1,2))/2.d0
-      Omega(4,6)=(Cinv(1,2)*Cinv(2,3)+Cinv(1,3)*Cinv(2,2))/2.d0
-      Omega(5,5)=(Cinv(1,1)*Cinv(3,3)+Cinv(1,3)*Cinv(1,3))/2.d0
-      Omega(5,6)=(Cinv(1,2)*Cinv(3,3)+Cinv(1,3)*Cinv(2,3))/2.d0
-      Omega(6,6)=(Cinv(2,2)*Cinv(3,3)+Cinv(2,3)*Cinv(2,3))/2.d0
-      
-      Omega(1:6,1:6)=-Omega(1:6,1:6)-transpose(Omega(1:6,1:6))
-      
-      do i=1,6
-          Omega(i,i)=Omega(i,i)/2
-      end do
-      
-      
-      
-      D1(1:6,1:6)=0.d0
-      D2(1:6,1:6)=0.d0
-      D3(1:6,1:6)=0.d0
-      P1(1:6,1:6)=0.d0
-      P2(1:6,1:6)=0.d0
-      C1(1:6,1:6)=0.d0
-      
-      D1=matmul(G,spread(Cstarvec,dim=2,
-     1 ncopies=6)*spread(Cinvvec,dim=2,ncopies=6))+
-     2 spread(Cinvvec,dim=1, ncopies=6)*spread(matmul(
-     3 G,Cstarvec),dim=1,ncopies=6) 
-      
-      D2=dot_product(Cstarvec(1:6),matmul(G(1:6,1:6),
-     1 (Cbarstarvec(1:6)-eyevec(1:6))))*Omega(1:6,1:6)
-      
-      D3=dot_product(Cstarvec,matmul(G,Cstarvec))*spread(Cinvvec,
-     1 dim=2,ncopies=6)*spread(Cinvvec,dim=1,ncopies=6) 
-      
-      P1=spread(Pvec,dim=2,ncopies=6)*spread((Pvec-(1/3)*
-     1 Cinvvec),dim=1,ncopies=6)
-      
-      P2=spread(Cinvvec,dim=2,ncopies=6)*spread(matmul(G,(Cbarstarvec-
-     1  eyevec)),dim=1,ncopies=6) 
-      
-      C1=spread(Cinvvec,dim=2,ncopies=6)*
-     1  spread(Cinvvec,dim=1,ncopies=6)
-      
-      
-      D(1:6,1:6)=0.d0
-      
-      D(1:6,1:6)=mu*exp(Qval)*(ss**2)*(G(1:6,1:6)-(1/3)*D1(1:6,1:6)-
-     1 ((ss**(-1))/3)*D2(1:6,1:6)+(1/9)*D3(1:6,1:6)) +
-     2 mu*exp(Qval)*(2*P1(1:6,1:6)-(ss/3)*P2(1:6,1:6)) + 
-     3  K*J*((2*J-1)*C1(1:6,1:6)+2*(J-1)*Omega(1:,1:6)) 
-      
-       return
-
-      end subroutine fung_mat
-
-
-
+         
 
       subroutine abq_UEL_2D_integrationpoints(n_points, n_nodes, xi, w)
 
