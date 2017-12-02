@@ -95,159 +95,162 @@
       
       integer      :: i,j,n_points,kint
     !
-      double precision  ::  xi(2,9)                          ! Area integration points
+      double precision  ::  xi(2,5)                          ! Area integration points
       double precision  ::  w(9)                             ! Area integration weights
       double precision  ::  N(9)                             ! 2D shape functions
       double precision  ::  dNdxi(9,2)                       ! 2D shape function derivatives
       double precision  ::  dNdx(9,2)                        ! Spatial derivatives
-      double precision  ::  Nbar(9)
-      double precision  ::  dNbardxi(9,2)
-      double precision  ::  dNbardx(9,2)
-      double precision  ::  dxdxi(2,2)                       ! Derivative of spatial coords wrt normalized coords
-
-      double precision  ::  sol(9), dsol(9)                   ! Sol vector contains [mu, c, dmudx1, dmudx2, dcdx1, dcdx2]
-      double precision  ::  q(9)                              ! q vector defined in class
-      double precision  ::  D(9,9), Dold(4,4)                 ! D matrix defined in class
-      double precision  ::  B(9,24)             ! p = B*U
+      double precision  ::  dxdxi(2,2)                        ! Derivative of spatial coords wrt normalized coords
+      double precision  ::  x(6,2)
+      double precision  ::  D(9,9)                            ! D matrix defined in class
+      double precision  ::  B(9,24)                           ! p = B*U
+      double precision  ::  T(8,6), R(2,3)
       double precision  ::  dxidx(2,2), determinant           ! Jacobian inverse and determinant
-      double precision  ::  diffusion_coeft,kappa,theta       ! Material properties
-      double precision  ::  E,xnu,Omega,xw                     ! Material properties
-      double precision  ::  c,xmu, dc, dxmu,stress(4),s33, enew(4)    ! concentration
-
-    !
-    !     Example ABAQUS UEL implementing 2D phase field model
-
+      double precision  ::  E,xnu,xh,xw ,L                    ! Beam Material properties
+      double precision  ::  stress(2) 
+      double precision  ::  S, C                              ! sine, cosine
+      double precision  ::  strain(3), strain_new(2),ehat(2,2)
+      double precision  ::  coords_s(2,4)
+      double precision  ::  Tf, Vf, Mf                           ! Post-processing variables
+      double precision  ::  yi(5)
+    ! Continuum Beam 
+      
       if (NNODE == 3) n_points = 4
       if (NNODE == 4) n_points = 4
       if (NNODE == 6) n_points = 4
       if (NNODE == 8) n_points = 4
       if (NNODE == 9) n_points = 9
+      
+      n_points = 5
 
-      call abq_UEL_2D_integrationpoints(4, NNODE, xi, w)
-
+      call abq_UEL_1D_integrationpoints(n_points, NNODE, yi, w) ! Check first argument
+      
+      xi=0.d0
+      xi(2,1:5)=yi(1:5)
+      
       RHS(1:MLVARX,1) = 0.d0
       AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
-
-      E = PROPS(1)
-      xnu = PROPS(2)
-      Omega = PROPS(3)
-      xw=PROPS(4)
-      kappa=PROPS(5)
-      diffusion_coeft=PROPS(6)
-      theta=PROPS(7)
-
+      Tf=0.d0
+      Vf=0.d0
+      Mf=0.d0
+      
+      xh=PROPS(1)
+      xw=PROPS(2)
+      E = PROPS(3)
+      xnu = PROPS(4)
+ 
+      ! Assembling [D]
+      
       D = 0.d0
-      d44 = 0.5D0*E/(1+xnu)
-      d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
-      d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
-      d13=d12
-      d23=d12
-      d21=d12
-      d22=d11
-      D(1,1) = d11
-      D(2,2) = d11
-      D(3,3) = d44
-      D(1,2) = d12
-      D(2,1) = D(1,2)
-      D(1,5)=-(Omega/3.d0)*(d11+d12+d13)
-      D(2,5)=-(Omega/3.d0)*(d21+d22+d23)
-      D(4,1)=D(1,5)
-      D(4,2)=D(2,5)
-      D(4,4)=1.d0
-    ! D(4,5) defined inside the integration loop 
-      D(5,5)= 1/DTIME
-      D(6,8)= -kappa
-      D(7,9)= -kappa
-      D(8,6)= theta*diffusion_coeft
-      D(9,7)= theta*diffusion_coeft
-  
+      D(1,1)=E
+      D(2,2)=0.5d0*E/(1+xnu)
+      
+       x=0.d0
+       
+      ! Extracting coordinates of Master nodes
+      
+       x(5,1:2)=COORDS(1:2,1)
+       x(6,1:2)=COORDS(1:2,2)
+     
+       L= sqrt((x(5,1)-x(6,1))**2+(x(5,2)-x(6,2))**2);
+       
+       S = (x(6,2)-x(5,2))/L
+       C = (x(6,1)-x(5,1))/L
+       
+      ! Calculating coordinates of Slave nodes
+      
+       x(1,1) = x(5,1)+(xh/2.d0)*S
+       x(1,2) = x(5,2)-(xh/2.d0)*C
+       x(2,1) = x(6,1)+(xh/2.d0)*S
+       x(2,2) = x(6,2)-(xh/2.d0)*C
+       x(3,1) = x(6,1)-(xh/2.d0)*S
+       x(3,2) = x(6,2)+(xh/2.d0)*C
+       x(4,1) = x(5,1)-(xh/2.d0)*S
+       x(4,2) = x(5,2)+(xh/2.d0)*C
+       
+       coords_s(1:2,1)=x(1,1:2)
+       coords_s(1:2,2)=x(2,1:2)
+       coords_s(1:2,3)=x(3,1:2)
+       coords_s(1:2,4)=x(4,1:2)
+       
+      ! Assembling [T]
+       
+       T=0.d0
+       
+       T(1,1)=1.d0
+       T(1,3)=x(5,2)-x(1,2)
+       T(2,2)=1.d0
+       T(2,3)= -1.d0*(x(5,1)-x(1,1))
+       T(3,4)=1.d0
+       T(3,6)=x(6,2)-x(2,2)
+       T(4,5)=1.d0
+       T(4,6)=x(6,1)-x(2,1)
+       T(5,4)=1.d0
+       T(5,6)=x(6,2)-x(3,2)
+       T(6,5)=1.d0
+       T(6,6)=x(6,1)-x(3,1)
+       T(7,1)=1.d0
+       T(7,3)=x(5,2)-x(4,2)
+       T(8,2)=1.d0
+       T(8,3)= -1.d0*(x(5,1)-x(4,1))
+       
+       
     !     --  Loop over integration points
-      do kint = 1, 4
-        call abq_UEL_2D_shapefunctions(xi(1:2,kint),8,N,dNdxi)
-        dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))
+      do kint = 1, n_points
+          
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,N,dNdxi) ! Check second argument
+        dxdxi = matmul(coords_s(1:2,1:4),dNdxi(1:4,1:2)) ! 2X2 matrix
         call abq_inverse_LU(dxdxi,dxidx,2)
         determinant = dxdxi(1,1)*dxdxi(2,2)-dxdxi(1,2)*dxdxi(2,1)
-        dNdx(1:8,1:2) = matmul(dNdxi(1:8,1:2),dxidx)
+        dNdx(1:4,1:2) = matmul(dNdxi(1:4,1:2),dxidx)
         
-        call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,Nbar,dNbardxi)
-      !  dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:4,1:2))
-       ! call abq_inverse_LU(dxdxi,dxidx,2)
-        !determinant = dxdxi(1,1)*dxdxi(2,2)-dxdxi(1,2)*dxdxi(2,1)
-        dNbardx(1:4,1:2) = matmul(dNbardxi(1:4,1:2),dxidx)
+        ehat(1:2,1)=dxdxi(1:2,1)/sqrt(dxdxi(1,1)**2+dxdxi(2,1)**2)
+        ehat(1:2,2)=dxdxi(1:2,2)/sqrt(dxdxi(1,2)**2+dxdxi(2,2)**2)
         
         B = 0.d0
-        B(1,1:16:4) = dNdx(1:4,1)
-        B(1,17:24:2)= dNdx(5:8,1)
-        B(2,2:16:4) = dNdx(1:4,2)
-        B(2,18:24:2)= dNdx(5:8,2)
-        B(3,1:16:4) = dNdx(1:4,2)
-        B(3,17:24:2)= dNdx(5:8,2)
-        B(3,2:16:4) = dNdx(1:4,1)
-        B(3,18:24:2)= dNdx(5:8,1)
-        B(4,3:16:4) = Nbar(1:4)
-        B(5,4:16:4) = Nbar(1:4)
-        B(6,3:16:4) = dNbardx(1:4,1)
-        B(7,3:16:4) = dNbardx(1:4,2)
-        B(8,4:16:4) = dNbardx(1:4,1)
-        B(9,4:16:4) = dNbardx(1:4,2)
+        B(1,1:2*4:2)=dNdx(1:4,1)
+        B(2,2:2*4:2)=dNdx(1:4,2)
+        B(3,1:2*4:2)=dNdx(1:4,2)
+        B(3,2:2*4:2)=dNdx(1:4,1)
         
-        sol = matmul(B(1:9,1:24),U(1:24))      ! The p vector at the end of the step
-        dsol = matmul(B(1:9,1:24),DU(1:24,1))    ! Increment in the p vector
+        strain=matmul(B(1:3,1:8),matmul(T(1:8,1:6),U(1:6)))
+        
+        R = 0.d0
+        R(1,1)=ehat(1,1)**2
+        R(1,2)=ehat(1,2)**2
+        R(1,3)=ehat(1,1)*ehat(1,2)
+        R(2,1)=2.d0*ehat(1,1)*ehat(2,1)
+        R(2,2)=2.d0*ehat(1,2)*ehat(2,2)
+        R(2,3)=ehat(1,1)*ehat(2,2)+ehat(1,2)*ehat(2,1)
+        
+        strain_new(1:2)=matmul(R(1:2,1:3),strain(1:3))        
+        
+        stress(1:2)=matmul(D(1:2,1:2),strain_new(1:2))
+      
+        RHS(1:6,1) = RHS(1:6,1) 
+     1   -(L*xh*xw*0.5d0)*matmul(transpose(matmul(R(1:2,1:3),
+     2   matmul(B(1:3,1:8),T(1:8,1:6)))),
+     3   stress(1:2))*w(kint)
 
-        c = sol(5)
-        xmu = sol(4)
-       
+        AMATRX(1:6,1:6) = AMATRX(1:6,1:6) 
+     1   + (L*xh*xw*0.5d0)*matmul(transpose(matmul(R(1:2,1:3),
+     2   matmul(B(1:3,1:8),T(1:8,1:6)))),matmul(D(1:2,1:2),
+     3   matmul(R(1:2,1:3),matmul(B(1:3,1:8),T(1:8,1:6)))))*w(kint)
         
-        enew(1)=sol(1)-c*Omega/3
-        enew(2)=sol(2)-c*Omega/3
-        enew(3)=-c*Omega/3
-        enew(4)=sol(3)
-        
-        Dold=0.d0
-        Dold(1,1)=d11
-        Dold(2,2)=d11
-        Dold(3,3)=d11
-        Dold(4,4)=d44
-        Dold(1,2)=d12
-        Dold(1,3)=d12
-        Dold(2,1)=d12
-        Dold(2,3)=d12
-        Dold(3,1)=d12
-        Dold(3,2)=d12
-        
-        stress(1:4)=matmul(Dold(1:4,1:4),enew(1:4))
-        
-        q(1) = stress(1)
-        q(2) = stress(2)
-        q(3) = stress(4)
-        q(4) = xmu-2*xw*(c)*(c-1)*(2*(c)-1)-
-     1   (Omega/3)*(stress(1)+stress(2)+stress(3))
-        q(5) = dsol(5)/DTIME
-        q(6) = -kappa*(sol(8))
-        q(7) = -kappa*(sol(9))
-        q(8) = diffusion_coeft*(sol(6)+(theta-1)*dsol(6))
-        q(9) = diffusion_coeft*(sol(7)+(theta-1)*dsol(7))
-
-        D(4,5) = -xw*(12*(c)**2-12*(c)+2) +
-     1   ((Omega**2)/9)*(3*d11+6*d12)
-
-
-        RHS(1:24,1) = RHS(1:24,1) 
-     1   - matmul(transpose(B(1:9,1:24)),q)*w(kint)*determinant
-
-        AMATRX(1:24,1:24) = AMATRX(1:2*NNODE,1:2*NNODE) 
-     1   + matmul(transpose(B(1:9,1:24)),
-     2             matmul(D,B(1:9,1:24)))*w(kint)*determinant
-        
-        
-         if (NSVARS>=n_points*4) then   ! Store stress at each integration point (if space was allocated to do so)
-             SVARS(4*kint-3:4*kint) = stress(1:4)
-        endif
+        Tf = Tf+(xw*xh*0.5d0)*stress(1)*w(kint)
+        Vf = Vf+(xw*xh*0.5d0)*stress(2)*w(kint)
+        Mf = Mf+(xw*xh**2*0.25d0)*stress(1)*xi(2,kint)*w(kint)
+      
+      ! if (NSVARS>=n_points*2) then   ! Store stress at each integration point (if space was allocated to do so)
+            
+       ! endif
   
 
       end do
   
-
+        SVARS(1) = Tf
+        SVARS(2) = Vf
+        SVARS(3) = Mf
 
       return
 
